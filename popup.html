@@ -1,0 +1,46 @@
+<!DOCTYPE html>
+<html>
+
+<head>
+  <meta charset="UTF-8">
+  <title>Sound Tags</title>
+  <style>
+    body {
+      font-family: Arial, sans-serif;
+      width: 200px;
+      padding: 10px;
+    }
+
+    h3 {
+      margin: 0 0 10px;
+      font-size: 16px;
+    }
+
+    .tag {
+      display: block;
+      margin: 5px 0;
+      padding: 5px;
+      cursor: pointer;
+      border: 1px solid #ccc;
+      border-radius: 4px;
+      text-align: center;
+      background-color: #f0f0f0;
+    }
+
+    .tag.selected {
+      background-color: #009688;
+      color: white;
+    }
+  </style>
+</head>
+
+<body>
+  <button id="toggleAudio">Start Audio Processing</button>
+  <h3>Detected Sounds</h3>
+  <div id="tagsContainer">
+    <!-- Buttons for each sound tag will be injected here -->
+  </div>
+  <script src="popup.js"></script>
+</body>
+
+</html>

@@ -1,0 +1,33 @@
+{
+  "manifest_version": 2,
+  "name": "Clarity.AI",
+  "author": "roy.biswajeet161@gmail.com",
+  "version": "0.0.1",
+  "description": "Identifies sounds from streaming audio and lets you selectively amplify them.",
+  "icons": {
+    "16": "assets/icon16.png",
+    "48": "assets/icon48.png",
+    "128": "assets/icon128.png"
+  },
+  "permissions": [
+    "activeTab",
+    "tabs",
+    "storage",
+    "tabCapture"
+  ],
+  "background": {
+    "scripts": [
+      "background.js"
+    ],
+    "persistent": false
+  },
+  "browser_action": {
+    "default_title": "Clarity AI",
+    "default_popup": "popup.html"
+  },
+  "options_ui": {
+    "page": "options.html",
+    "browser_style": true,
+    "chrome_style": true
+  }
+}
