@@ -4,12 +4,53 @@ let platform = chrome ? chrome : browser;
 // Per tab data.
 const tabs = [];
 
+// Flask Server URL
+const SERVER_URL = "http://127.0.0.1:5000/tags";
+
+// Function to send audio data to Flask backend
+async function sendAudioToServer(audioBuffer) {
+    try {
+        const response = await fetch(SERVER_URL, {
+            method: "POST",
+            headers: {
+                "Content-Type": "application/json"
+            },
+            body: JSON.stringify({ audio: audioBuffer }) // Modify based on actual audio data structure
+        });
+
+        const data = await response.json();
+        console.log("Received tags:", data.tags);
+        updateUIWithTags(data.tags);
+    } catch (error) {
+        console.error("Error communicating with Flask server:", error);
+    }
+}
+
+function extractAudioData(stream) {
+    const audioContext = new (window.AudioContext || window.webkitAudioContext)();
+    const source = audioContext.createMediaStreamSource(stream);
+    const processor = audioContext.createScriptProcessor(4096, 1, 1);
+
+    source.connect(processor);
+    processor.connect(audioContext.destination);
+
+    return new Promise((resolve) => {
+        processor.onaudioprocess = (event) => {
+            const audioBuffer = event.inputBuffer.getChannelData(0);  // Extract raw audio
+            resolve(Array.from(audioBuffer));  // Convert to a plain array for JSON serialization
+            processor.disconnect();  // Stop processing once we have data
+        };
+    });
+}
+
+function updateUIWithTags(tags) {
+    // Send tags to popup.js for display in the UI
+    chrome.runtime.sendMessage({ type: "updateTags", tags });
+}
+
 // On runtime message received.
 platform.runtime.onMessage.addListener(function (request, sender, sendResponse) {
-    // Setup empty object if not called previously.
     if (tabs[request.id] === undefined) { tabs[request.id] = {}; }
-    // If volume is default disable everything.
-    // TODO: Add support to stop inferencing
 
     if (tabs[request.id].audioContext !== undefined) {
         tabs[request.id].audioContext.close();
@@ -17,9 +58,11 @@ platform.runtime.onMessage.addListener(function (request, sender, sendResponse) 
     if (tabs[request.id].mediaStream !== undefined) {
         tabs[request.id].mediaStream.getAudioTracks()[0].stop();
     }
+
     tabs[request.id] = {};
 });
 
+// Handling audio processing toggle
 chrome.runtime.onMessage.addListener((message, sender, sendResponse) => {
     if (message.type === "toggleAudioProcessing") {
         const tabId = message.tabId;
@@ -56,6 +99,9 @@ chrome.runtime.onMessage.addListener((message, sender, sendResponse) => {
                     if (message.volume !== undefined) {
                         tabs[tabId].gainFilter.gain.value = message.volume;
                     }
+
+                    // Capture and send audio to Flask backend
+                    sendAudioToServer(extractAudioData(stream)); // Ensure `extractAudioData()` is properly defined
                 });
             }
         } else {
@@ -73,23 +119,18 @@ chrome.runtime.onMessage.addListener((message, sender, sendResponse) => {
     }
 });
 
+// UI interactions
+const gainNodes = {};
 
-const gainNodes = {};           // Mapping: tag -> GainNode
-const soundTags = ['music', 'speech', 'noise'];  // Example tags
-
-// Listen for messages from popup.js to adjust sound levels
 chrome.runtime.onMessage.addListener((message, sender, sendResponse) => {
     if (message.type === 'toggle-sound') {
-        // Adjust the gain for the sound tag based on UI selection
         adjustSound(message.tag, message.selected);
         sendResponse({ status: 'Sound adjusted for ' + message.tag });
     }
 });
 
-// Function to adjust gain based on tag selection
 function adjustSound(tag, isSelected) {
     if (gainNodes[tag]) {
-        // Amplify selected sound (e.g. gain = 2.0) or mute unselected (gain = 0.0)
         gainNodes[tag].gain.value = isSelected ? 2.0 : 0.0;
         console.log(`Adjusted gain for ${tag} to ${gainNodes[tag].gain.value}`);
     } else {
