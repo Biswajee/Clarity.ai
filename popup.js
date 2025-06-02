@@ -27,7 +27,7 @@ document.addEventListener('DOMContentLoaded', () => {
 
     function displayTags(tags) {
         const tagContainer = document.getElementById("tag-list");
-        tagContainer.innerHTML = ""; // Clear previous tags
+        tagContainer.innerHTML = "";
 
         tags.forEach((tag) => {
             const tagElement = document.createElement("div");

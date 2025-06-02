@@ -1,74 +1,68 @@
-// Get platform specific interface object.
-let platform = chrome ? chrome : browser;
+// Get platform-specific interface object
+const platform = chrome ? chrome : browser;
 
-// Per tab data.
-const tabs = [];
+// 🔹 Configuration
+const SERVER_URL = "http://127.0.0.1:5000";  // WebSocket Server URL
+const tabs = {};
 
-// Flask Server URL
-const SERVER_URL = "http://127.0.0.1:5000/tags";
-
-// Function to send audio data to Flask backend
-async function sendAudioToServer(audioBuffer) {
-    try {
-        const response = await fetch(SERVER_URL, {
-            method: "POST",
-            headers: {
-                "Content-Type": "application/json"
-            },
-            body: JSON.stringify({ audio: audioBuffer }) // Modify based on actual audio data structure
-        });
-
-        const data = await response.json();
-        console.log("Received tags:", data.tags);
-        updateUIWithTags(data.tags);
-    } catch (error) {
-        console.error("Error communicating with Flask server:", error);
+// ✅ Initialize WebSocket Connection
+function connectSocket(tabId) {
+    if (!tabs[tabId]) {
+        tabs[tabId] = {};  // ✅ Ensure tab object exists
     }
+    tabs[tabId].socket = io(SERVER_URL);
+    setupWebSocketListeners(tabs[tabId].socket);
 }
 
-function extractAudioData(stream) {
-    const audioContext = new (window.AudioContext || window.webkitAudioContext)();
+// ✅ Start Streaming Audio to Flask via WebSockets
+function startStreaming(tabId, stream) {
+    if (!tabs[tabId]) {
+        tabs[tabId] = {};  // ✅ Ensure tab object exists
+    }
+
+    const audioContext = tabs[tabId].audioContext || new (window.AudioContext || window.webkitAudioContext)();
     const source = audioContext.createMediaStreamSource(stream);
     const processor = audioContext.createScriptProcessor(4096, 1, 1);
 
+    tabs[tabId].audioContext = audioContext;
+    tabs[tabId].gainFilter = audioContext.createGain();
+    source.connect(tabs[tabId].gainFilter);
+    tabs[tabId].gainFilter.connect(audioContext.destination);
+
+    processor.onaudioprocess = (event) => {
+        const now = Date.now();
+        if (!tabs[tabId].lastSentTime || now - tabs[tabId].lastSentTime > 100) {  // ✅ Throttle WebSocket streaming
+            const audioBuffer = Array.from(event.inputBuffer.getChannelData(0));
+            if (tabs[tabId].socket) {  // ✅ Ensure WebSocket exists before emitting
+                tabs[tabId].socket.emit("audio_stream", { audio: audioBuffer });
+            }
+            tabs[tabId].lastSentTime = now;
+        }
+    };
+
     source.connect(processor);
     processor.connect(audioContext.destination);
-
-    return new Promise((resolve) => {
-        processor.onaudioprocess = (event) => {
-            const audioBuffer = event.inputBuffer.getChannelData(0);  // Extract raw audio
-            resolve(Array.from(audioBuffer));  // Convert to a plain array for JSON serialization
-            processor.disconnect();  // Stop processing once we have data
-        };
-    });
 }
 
+// ✅ Handle UI Updates
 function updateUIWithTags(tags) {
-    // Send tags to popup.js for display in the UI
     chrome.runtime.sendMessage({ type: "updateTags", tags });
 }
 
-// On runtime message received.
-platform.runtime.onMessage.addListener(function (request, sender, sendResponse) {
-    if (tabs[request.id] === undefined) { tabs[request.id] = {}; }
+// ✅ WebSocket Event Listener: Receiving Tags
+function setupWebSocketListeners(socket) {
+    socket.on("classified_tags", (data) => {
+        updateUIWithTags(data.tags);
+    });
+}
 
-    if (tabs[request.id].audioContext !== undefined) {
-        tabs[request.id].audioContext.close();
-    }
-    if (tabs[request.id].mediaStream !== undefined) {
-        tabs[request.id].mediaStream.getAudioTracks()[0].stop();
-    }
-
-    tabs[request.id] = {};
-});
-
-// Handling audio processing toggle
+// ✅ Start/Stop Audio Processing
 chrome.runtime.onMessage.addListener((message, sender, sendResponse) => {
-    if (message.type === "toggleAudioProcessing") {
-        const tabId = message.tabId;
+    const tabId = message.tabId;
 
+    if (message.type === "toggleAudioProcessing") {
         if (!tabId) {
-            console.error("No tab ID found for audio processing.");
+            console.error("No tab ID found.");
             sendResponse({ status: "Error: No tab ID" });
             return;
         }
@@ -80,54 +74,47 @@ chrome.runtime.onMessage.addListener((message, sender, sendResponse) => {
                 tabs[tabId] = {};
             }
 
-            if (!tabs[tabId].audioContext) {
-                tabs[tabId].audioContext = new (window.AudioContext || window.webkitAudioContext)();
-                platform.tabCapture.capture({ audio: true, video: false }, (stream) => {
-                    if (!stream) {
-                        console.error("Stream capture failed.");
-                        tabs[tabId].audioContext.close();
-                        tabs[tabId].audioContext = undefined;
-                        return;
-                    }
+            platform.tabCapture.capture({ audio: true, video: false }, (stream) => {
+                if (!stream) {
+                    console.error("Stream capture failed.");
+                    return;
+                }
 
-                    tabs[tabId].mediaStream = stream;
-                    let source = tabs[tabId].audioContext.createMediaStreamSource(stream);
-                    tabs[tabId].gainFilter = tabs[tabId].audioContext.createGain();
-                    source.connect(tabs[tabId].gainFilter);
-                    tabs[tabId].gainFilter.connect(tabs[tabId].audioContext.destination);
-
-                    if (message.volume !== undefined) {
-                        tabs[tabId].gainFilter.gain.value = message.volume;
-                    }
-
-                    // Capture and send audio to Flask backend
-                    sendAudioToServer(extractAudioData(stream)); // Ensure `extractAudioData()` is properly defined
-                });
-            }
+                tabs[tabId].mediaStream = stream;
+                connectSocket(tabId);  // ✅ Ensure WebSocket reconnects properly
+                startStreaming(tabId, stream);
+            });
         } else {
             console.log(`Stopping audio processing for tab ${tabId}...`);
+
             if (tabs[tabId]?.audioContext) {
                 tabs[tabId].audioContext.close();
             }
             if (tabs[tabId]?.mediaStream) {
                 tabs[tabId].mediaStream.getAudioTracks()[0].stop();
             }
-            delete tabs[tabId]; // Remove tab data when processing stops
+
+            if (tabs[tabId]?.socket) {
+                tabs[tabId].socket.disconnect();
+            }
+
+            delete tabs[tabId];
         }
 
         sendResponse({ status: `Audio processing ${message.active ? "started" : "stopped"}` });
     }
 });
 
-// UI interactions
-const gainNodes = {};
-
+// ✅ UI Interactions: Handling Sound Preferences
 chrome.runtime.onMessage.addListener((message, sender, sendResponse) => {
     if (message.type === 'toggle-sound') {
         adjustSound(message.tag, message.selected);
-        sendResponse({ status: 'Sound adjusted for ' + message.tag });
+        sendResponse({ status: `Sound adjusted for ${message.tag}` });
     }
 });
+
+// ✅ Adjust Gain for Specific Sound Categories
+const gainNodes = {};
 
 function adjustSound(tag, isSelected) {
     if (gainNodes[tag]) {
@@ -137,3 +124,6 @@ function adjustSound(tag, isSelected) {
         console.log(`No gain node found for tag: ${tag}`);
     }
 }
+
+// ✅ Keep Background Page Alive (For Manifest V2)
+setInterval(() => console.log("Keeping background page alive..."), 5000);

@@ -1,14 +1,20 @@
-from flask import Flask, request, jsonify
-from flask_cors import CORS
+from flask import Flask
+from flask_socketio import SocketIO
+import logging
 
+logging.basicConfig(level=logging.DEBUG)
 app = Flask(__name__)
-CORS(app, origins="chrome-extension://hkahdmaojpojahaialjnjjhfbddfniai")  # Allow your extension
+# Allow cross-origin WebSocket connections
+socketio = SocketIO(app, cors_allowed_origins="*")
 
-@app.route("/tags", methods=["POST"])
-def get_tags():
-    data = request.json  # Received audio metadata
-    tags = ["speech", "background noise", "music"]  # Example tags
-    return jsonify({"tags": tags})
+logging.basicConfig(level=logging.DEBUG)
+app.logger.setLevel(logging.DEBUG)
+
+# WebSocket event handler
+@socketio.on("audio_stream")
+def handle_audio_stream(data):
+    print("Received audio data:", len(data["audio"]))
+    socketio.emit("classified_tags", {"tags": ["speech", "background noise", "music"]})  # Dummy tags for now
 
 if __name__ == "__main__":
-    app.run(host="127.0.0.1", port=5000)
+    socketio.run(app, host="127.0.0.1", port=5000,  debug=True, use_reloader=True)
