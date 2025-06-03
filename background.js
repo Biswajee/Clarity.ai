@@ -105,25 +105,5 @@ chrome.runtime.onMessage.addListener((message, sender, sendResponse) => {
     }
 });
 
-// ✅ UI Interactions: Handling Sound Preferences
-chrome.runtime.onMessage.addListener((message, sender, sendResponse) => {
-    if (message.type === 'toggle-sound') {
-        adjustSound(message.tag, message.selected);
-        sendResponse({ status: `Sound adjusted for ${message.tag}` });
-    }
-});
-
-// ✅ Adjust Gain for Specific Sound Categories
-const gainNodes = {};
-
-function adjustSound(tag, isSelected) {
-    if (gainNodes[tag]) {
-        gainNodes[tag].gain.value = isSelected ? 2.0 : 0.0;
-        console.log(`Adjusted gain for ${tag} to ${gainNodes[tag].gain.value}`);
-    } else {
-        console.log(`No gain node found for tag: ${tag}`);
-    }
-}
-
 // ✅ Keep Background Page Alive (For Manifest V2)
 setInterval(() => console.log("Keeping background page alive..."), 5000);
