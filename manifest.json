@@ -29,5 +29,10 @@
     "browser_style": true,
     "chrome_style": true
   },
-  "content_security_policy": "script-src 'self' blob: filesystem:; object-src 'self';"
+  "web_accessible_resources": [
+    "scripts/*.mjs",
+    "scripts/*.wasm",
+    "models/UVR-MDX-NET-Inst_HQ_3.onnx"
+  ],
+  "content_security_policy": "script-src 'wasm-eval' 'self' blob: filesystem:; object-src 'self';"
 }

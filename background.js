@@ -5,6 +5,19 @@ const platform = chrome ? chrome : browser;
 const SERVER_URL = "http://127.0.0.1:5000";  // WebSocket Server URL
 const tabs = {};
 
+ort.env.wasm.numThreads = 1;  // Try with single-threaded if SIMD/threaded fails
+ort.env.wasm.wasmPaths = {
+  'ort-wasm-simd-threaded': chrome.runtime.getURL('scripts/ort-wasm-simd-threaded.jsep.mjs'),
+};
+
+async function loadModel() {
+    await ort.env.ready;  // Ensure WASM backends are ready
+    const modelURL = chrome.runtime.getURL("models/UVR-MDX-NET-Inst_HQ_3.onnx");
+    const session = await ort.InferenceSession.create(modelURL);
+    console.log('Model loaded:', session);
+    return session;
+}
+
 // ✅ Initialize WebSocket Connection
 function connectSocket(tabId) {
     if (!tabs[tabId]) {
