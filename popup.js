@@ -58,4 +58,20 @@ document.addEventListener("DOMContentLoaded", () => {
             tagContainer.appendChild(tagElement);
         });
     }
+
+    const streamModeSelector = document.getElementById("streamMode");
+
+    streamModeSelector.addEventListener("change", (event) => {
+        const selectedMode = event.target.value;
+
+        chrome.tabs.query({ active: true, currentWindow: true }, (tabs) => {
+            if (tabs.length === 0) return;
+
+            chrome.runtime.sendMessage({
+                type: "switchStream",
+                tabId: tabs[0].id,
+                target: selectedMode // "vocals" or "accompaniment"
+            });
+        });
+    });
 });
