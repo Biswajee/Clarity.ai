@@ -1,6 +1,6 @@
 const platform = chrome || browser;
 const sampleRate = 44100;
-const bufferSize = sampleRate * 1.4; // Increase to ~1.4 seconds for 3072 frames
+const bufferSize = sampleRate * 0.2; // Reduce to 0.2 seconds for real-time processing
 const tabs = {};
 let session = null;
 let modelLoading = false;
@@ -14,17 +14,42 @@ let modelLoading = false;
         console.log("Preloading ONNX model...");
         await ort.env.ready;
 
-        // Use WebGL backend for better performance if available
+        // Configure execution providers with GPU acceleration
         ort.env.wasm.numThreads = navigator.hardwareConcurrency || 4;
         ort.env.wasm.wasmPaths = {
             'ort-wasm-simd-threaded': chrome.runtime.getURL('scripts/ort-wasm-simd-threaded.jsep.mjs'),
         };
 
+        // Enable WebGL for GPU acceleration
+        ort.env.webgl = {
+            contextId: 'webgl2',
+            matmulMaxBatchSize: 16,
+            textureCacheMode: 'full',
+            pack: true,
+            async: false
+        };
+
         const modelURL = chrome.runtime.getURL("models/UVR-MDX-NET-Inst_HQ_3.onnx");
-        session = await ort.InferenceSession.create(modelURL, {
-            executionProviders: ['wasm'], // Use WASM only since WebGL not available
-            graphOptimizationLevel: 'all'
-        });
+        
+        // Try GPU first, fallback to WASM if GPU fails
+        let executionProviders = ['webgl', 'wasm'];
+        
+        try {
+            console.log("Attempting to load model with GPU acceleration...");
+            session = await ort.InferenceSession.create(modelURL, {
+                executionProviders: executionProviders,
+                graphOptimizationLevel: 'all'
+            });
+            console.log("Model loaded successfully with execution providers:", session.executionProviders);
+        } catch (gpuError) {
+            console.warn("GPU acceleration failed, falling back to WASM:", gpuError);
+            // Fallback to WASM only
+            session = await ort.InferenceSession.create(modelURL, {
+                executionProviders: ['wasm'],
+                graphOptimizationLevel: 'all'
+            });
+            console.log("Model loaded with WASM fallback");
+        }
         console.log("ONNX model successfully loaded");
         console.log("Available providers:", session.inputNames, session.outputNames);
         
@@ -173,9 +198,9 @@ async function startStreaming(tabId, stream) {
         const gainOriginal = audioContext.createGain();
         const gainProcessed = audioContext.createGain();
         
-        // Start with processed audio enabled (for testing)
-        gainOriginal.gain.value = 0.0;  // Mute original
-        gainProcessed.gain.value = 1.0; // Enable processed
+        // Start with original audio enabled by default
+        gainOriginal.gain.value = 1.0;  // Enable original
+        gainProcessed.gain.value = 0.0; // Mute processed initially
 
         await audioContext.audioWorklet.addModule(chrome.runtime.getURL('stream-worklet.js'));
         const workletNode = new AudioWorkletNode(audioContext, 'stream-processor', {
@@ -198,12 +223,11 @@ async function startStreaming(tabId, stream) {
         const source = audioContext.createMediaStreamSource(stream);
         source.connect(workletNode);
         
-        // Create separate paths for original and processed audio
+        // Connect original audio path (passthrough from worklet)
         workletNode.connect(gainOriginal);
-        const processedGain = audioContext.createGain();
-        processedGain.connect(gainProcessed);
-        
         gainOriginal.connect(audioContext.destination);
+        
+        // Processed audio will be connected separately when buffers are played
         gainProcessed.connect(audioContext.destination);
 
         // Handle worklet messages with queue to prevent blocking
@@ -221,14 +245,23 @@ async function startStreaming(tabId, stream) {
         
         console.log("Audio streaming started for tab:", tabId);
         
-        // Set initial mode to accompaniment (processed audio)
-        setTimeout(() => {
-            if (tabs[tabId]) {
-                tabs[tabId].gainOriginal.gain.setTargetAtTime(0.0, audioContext.currentTime, 0.1);
-                tabs[tabId].gainProcessed.gain.setTargetAtTime(1.0, audioContext.currentTime, 0.1);
-                console.log("Initial mode set to accompaniment (processed audio enabled)");
-            }
-        }, 100);
+        // Set initial mode based on saved preference
+        chrome.storage.local.get(["streamMode"], (data) => {
+            const savedMode = data.streamMode || "accompaniment";
+            setTimeout(() => {
+                if (tabs[tabId]) {
+                    if (savedMode === "vocals") {
+                        tabs[tabId].gainOriginal.gain.setTargetAtTime(1.0, audioContext.currentTime, 0.1);
+                        tabs[tabId].gainProcessed.gain.setTargetAtTime(0.0, audioContext.currentTime, 0.1);
+                        console.log("Initial mode set to vocals (original audio enabled)");
+                    } else {
+                        tabs[tabId].gainOriginal.gain.setTargetAtTime(0.0, audioContext.currentTime, 0.1);
+                        tabs[tabId].gainProcessed.gain.setTargetAtTime(1.0, audioContext.currentTime, 0.1);
+                        console.log("Initial mode set to accompaniment (processed audio enabled)");
+                    }
+                }
+            }, 100);
+        });
         
     } catch (error) {
         console.error("Failed to start streaming:", error);
@@ -268,17 +301,22 @@ async function processAudioQueue(tabId) {
             return;
         }
 
-        // Run inference with proper input name
+        // Run inference with proper input name and performance monitoring
         const inputName = session.inputNames ? session.inputNames[0] : 'input';
         const inputs = {};
         inputs[inputName] = inputTensor;
         
+        const inferenceStart = performance.now();
+        
         const timeoutPromise = new Promise((_, reject) => 
-            setTimeout(() => reject(new Error('Inference timeout')), 3000)
+            setTimeout(() => reject(new Error('Inference timeout')), 5000) // Increased timeout for GPU warmup
         );
         
         const inferencePromise = session.run(inputs);
         const results = await Promise.race([inferencePromise, timeoutPromise]);
+        
+        const inferenceTime = performance.now() - inferenceStart;
+        console.log(`Inference completed in ${inferenceTime.toFixed(2)}ms`);
         
         // Get output with proper name
         const outputName = session.outputNames ? session.outputNames[0] : 'output';
@@ -315,44 +353,77 @@ async function processAudioQueue(tabId) {
             combinedMagnitude[i] = (ch0 + ch1 + ch2 + ch3) * 0.25;
         }
         
-        // Convert spectral magnitude back to time domain using simpler approach
-        const hopSize = 512;  // Smaller hop size for better reconstruction
-        const frameSize = 1024;
+        // Proper spectral to time domain conversion using overlap-add
+        const hopSize = 1024;  // Match the hop size used in analysis
+        const frameSize = 2048; // Match the frame size used in analysis
         const audioLength = waveform.length; // Match original length
         const leftAudio = new Float32Array(audioLength);
         const rightAudio = new Float32Array(audioLength);
         
-        // Simple spectral to time conversion
+        // Extract left and right channel spectral data
+        const leftSpectral = new Float32Array(channelSize);
+        const rightSpectral = new Float32Array(channelSize);
+        
+        // Use channels 0 and 1 as left and right magnitude spectra
+        for (let i = 0; i < channelSize; i++) {
+            leftSpectral[i] = outputData[i] || 0;                    // Channel 0: Left
+            rightSpectral[i] = outputData[channelSize + i] || 0;     // Channel 1: Right
+        }
+        
+        // Convert spectral frames back to time domain using overlap-add
         let writePos = 0;
         for (let frameIdx = 0; frameIdx < numFrames && writePos < audioLength - frameSize; frameIdx++) {
             const frameStart = frameIdx * numBins;
             
-            // Create a simple time-domain frame from magnitude data
-            for (let i = 0; i < Math.min(frameSize, audioLength - writePos); i++) {
-                const binIdx = Math.floor(i * numBins / frameSize);
-                const magnitude = combinedMagnitude[frameStart + binIdx];
+            // Create time-domain frame using inverse DFT approximation
+            const leftFrame = new Float32Array(frameSize);
+            const rightFrame = new Float32Array(frameSize);
+            
+            // Simple inverse transform: sum weighted cosines for each frequency bin
+            for (let t = 0; t < frameSize; t++) {
+                let leftSample = 0;
+                let rightSample = 0;
                 
-                // Convert magnitude to audio sample with some phase variation
-                const phase = (i * 0.1 + frameIdx * 0.01) % (Math.PI * 2);
-                const sample = magnitude * Math.cos(phase) * 0.1; // Scale down significantly
-                
-                if (writePos + i < audioLength) {
-                    leftAudio[writePos + i] += sample;
-                    rightAudio[writePos + i] += sample * 0.8; // Slight difference for stereo
+                for (let f = 0; f < Math.min(numBins, frameSize / 2); f++) {
+                    const leftMag = leftSpectral[frameStart + f];
+                    const rightMag = rightSpectral[frameStart + f];
+                    
+                    // Create phase based on frequency and time
+                    const phase = (2 * Math.PI * f * t) / frameSize;
+                    const cosPhase = Math.cos(phase);
+                    
+                    leftSample += leftMag * cosPhase;
+                    rightSample += rightMag * cosPhase;
                 }
+                
+                leftFrame[t] = leftSample / numBins; // Normalize
+                rightFrame[t] = rightSample / numBins;
+            }
+            
+            // Apply Hann window for smooth overlap-add
+            for (let i = 0; i < frameSize; i++) {
+                const window = 0.5 * (1 - Math.cos(2 * Math.PI * i / frameSize));
+                leftFrame[i] *= window;
+                rightFrame[i] *= window;
+            }
+            
+            // Overlap-add to output buffer
+            for (let i = 0; i < frameSize && writePos + i < audioLength; i++) {
+                leftAudio[writePos + i] += leftFrame[i];
+                rightAudio[writePos + i] += rightFrame[i];
             }
             
             writePos += hopSize;
         }
         
-        // Normalize
+        // Normalize and apply gain
         let maxAmp = 0;
         for (let i = 0; i < audioLength; i++) {
             maxAmp = Math.max(maxAmp, Math.abs(leftAudio[i]), Math.abs(rightAudio[i]));
         }
         
         if (maxAmp > 0) {
-            const normalizeGain = 0.3 / maxAmp; // Increase gain
+            const normalizeGain = 0.5 / maxAmp; // Reasonable gain level
             for (let i = 0; i < audioLength; i++) {
                 leftAudio[i] *= normalizeGain;
                 rightAudio[i] *= normalizeGain;
@@ -387,17 +458,6 @@ async function processAudioQueue(tabId) {
         player.connect(tabData.gainProcessed);
         player.start();
         
-        // Add volume debugging
-        const testOscillator = audioContext.createOscillator();
-        const testGain = audioContext.createGain();
-        testOscillator.frequency.value = 440; // A4 note
-        testGain.gain.value = 0.1;
-        testOscillator.connect(testGain);
-        testGain.connect(audioContext.destination);
-        testOscillator.start(audioContext.currentTime + 0.1);
-        testOscillator.stop(audioContext.currentTime + 0.3);
-        console.log("Test tone should play to verify audio output");
-        
         // Clean up player after playback
         player.onended = () => {
             try {
@@ -416,8 +476,8 @@ async function processAudioQueue(tabId) {
     } finally {
         if (tabs[tabId]) {
             tabs[tabId].isProcessing = false;
-            // Process next item in queue
-            setTimeout(() => processAudioQueue(tabId), 10);
+            // Process next item in queue immediately for better responsiveness
+            setTimeout(() => processAudioQueue(tabId), 1);
         }
     }
 }

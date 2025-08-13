@@ -23,7 +23,18 @@ document.addEventListener("DOMContentLoaded", () => {
     function updateButtonState(processing) {
         toggleButton.textContent = processing ? "Stop Audio Processing" : "Start Audio Processing";
         toggleButton.disabled = false;
-        streamModeSelector.disabled = !processing;
+        // Allow mode selection at any time
+        streamModeSelector.disabled = false;
+        
+        // Show/hide processing indicator
+        const indicator = document.getElementById("processingIndicator");
+        if (indicator) {
+            if (processing) {
+                indicator.classList.add("active");
+            } else {
+                indicator.classList.remove("active");
+            }
+        }
         
         if (processing) {
             toggleButton.style.backgroundColor = "#f44336";
@@ -121,14 +132,16 @@ document.addEventListener("DOMContentLoaded", () => {
     streamModeSelector.addEventListener("change", async (event) => {
         const selectedMode = event.target.value;
         
+        // Always save selection
+        chrome.storage.local.set({ streamMode: selectedMode });
+        
+        // Only send switch message if processing is active
         if (!currentTabId || !isProcessing) {
+            showStatus(`Mode set to ${selectedMode === 'vocals' ? 'Vocals Only' : 'Music Only'}`);
             return;
         }
 
         try {
-            // Save selection
-            chrome.storage.local.set({ streamMode: selectedMode });
-
             const response = await sendMessageWithTimeout({
                 type: "switchStream",
                 tabId: currentTabId,
@@ -136,7 +149,7 @@ document.addEventListener("DOMContentLoaded", () => {
             }, 2000);
 
             if (response && response.status) {
-                showStatus(`Switched to ${selectedMode}`);
+                showStatus(`Switched to ${selectedMode === 'vocals' ? 'Vocals Only' : 'Music Only'}`);
             }
         } catch (error) {
             console.error("Stream switch error:", error);

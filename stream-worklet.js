@@ -7,7 +7,7 @@ class StreamProcessor extends AudioWorkletProcessor {
     this.audioBuffer = [];
     this.isRunning = false;
     this.lastProcessTime = 0;
-    this.minInterval = 200; // Increased to 200ms for stability
+    this.minInterval = 50; // Reduced to 50ms for more responsive processing
     this.silenceThreshold = 1e-4;
     this.processingCounter = 0; // Replace setTimeout with counter
     
